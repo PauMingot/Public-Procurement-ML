@@ -1,5 +1,5 @@
 # Licitaciones_Creacion_Historicos_con_Lags.py
-# Versión final (Corregida + Lags de 3, 9, 15 meses)
+# Versi籀n final (Corregida + Lags de 3, 9, 15 meses)
 import numpy as np
 import pandas as pd
 import sqlite3
@@ -28,7 +28,7 @@ PRESUPUESTO_COL = 'lote_presupuesto_base_sin_impuestos'
 DESCUENTO_COL = 'descuento_promedio'
 TIPO_CONTRATO_COL = 'tipo_contrato'
 
-# --- ¡NUEVO! Configuración de Lags ---
+# --- 癒NUEVO! Configuraci籀n de Lags ---
 WINDOWS_MESES = {
     '3m': '90D',
     '9m': '270D',
@@ -43,12 +43,12 @@ MIN_PERIODS = 2 # (Requiere al menos 2 licitaciones en la ventana)
 def clean_col_name(name):
     """Limpia los nombres de columnas para que sean seguros."""
     name = str(name).lower()
-    name = re.sub(r'[áäàãâ]', 'a', name)
-    name = re.sub(r'[éëèê]', 'e', name)
-    name = re.sub(r'[íïìî]', 'i', name)
-    name = re.sub(r'[óöòõô]', 'o', name)
-    name = re.sub(r'[úüùû]', 'u', name)
-    name = re.sub(r'[ñ]', 'n', name)
+    name = re.sub(r'[獺瓣�瓊璽]', 'a', name)
+    name = re.sub(r'[矇禱癡礙]', 'e', name)
+    name = re.sub(r'[穩簿穫簾]', 'i', name)
+    name = re.sub(r'[籀繹簷繭繫]', 'o', name)
+    name = re.sub(r'[繳羹羅羶]', 'u', name)
+    name = re.sub(r'[簽]', 'n', name)
     name = re.sub(r'[^a-z0-9_]+', '_', name)
     name = name.strip('_')
     return name
@@ -82,35 +82,35 @@ test_df_orig = df.iloc[val_end:].copy().reset_index(drop=True)
 print(f"Train: {len(train_df_orig)}, Val: {len(val_df_orig)}, Test: {len(test_df_orig)}")
 
 
-# --- ¡BLOQUE NUEVO! ---
+# --- 癒BLOQUE NUEVO! ---
 # -----------------------------------------------------------------
-# FUNCIÓN 0: CALCULAR FEATURES DE "MERCADO" (por Tipo de Contrato)
+# FUNCI�N 0: CALCULAR FEATURES DE "MERCADO" (por Tipo de Contrato)
 # -----------------------------------------------------------------
 def calcular_features_mercado(df_hist, group_col, target_col, date_col, windows):
     """
-    Calcula las estadísticas de rolling del 'mercado' (ej. por tipo_contrato).
+    Calcula las estad穩sticas de rolling del 'mercado' (ej. por tipo_contrato).
     Usa .shift(1) para asegurar que solo se usa el pasado (sin fugas).
     """
-    print(f"Calculando estadísticas de mercado para '{group_col}'...")
+    print(f"Calculando estad穩sticas de mercado para '{group_col}'...")
     df_hist = df_hist.sort_values(date_col)
     
-    # 1. Agrupar por día y 'group_col' para tener el descuento medio de ese día
+    # 1. Agrupar por d穩a y 'group_col' para tener el descuento medio de ese d穩a
     df_daily_mean = df_hist.groupby([pd.Grouper(key=date_col, freq='D'), group_col])[target_col].mean()
     
-    # 2. Resetear índice para tener 'date_col' y 'group_col' como columnas
+    # 2. Resetear 穩ndice para tener 'date_col' y 'group_col' como columnas
     df_daily_mean = df_daily_mean.reset_index()
 
-    # 3. Pivotar para tener 'tipo_contrato' como columnas y 'date' como índice
+    # 3. Pivotar para tener 'tipo_contrato' como columnas y 'date' como 穩ndice
     df_pivot = df_daily_mean.pivot(index=date_col, columns=group_col, values=target_col)
     
-    # 4. Rellenar huecos (forward-fill) para que el rolling sea más estable
+    # 4. Rellenar huecos (forward-fill) para que el rolling sea m獺s estable
     df_pivot_filled = df_pivot.fillna(method='ffill')
 
-    # 5. Calcular las medias móviles (rolling) y hacer .shift(1) (ANTI-FUGAS)
+    # 5. Calcular las medias m籀viles (rolling) y hacer .shift(1) (ANTI-FUGAS)
     lookup_dfs = []
     for w_name, w_val in windows.items():
         col_prefix = f'mercado_{group_col}_{target_col}_{w_name}'
-        # min_periods=2 para que sea un promedio de al menos 2 días
+        # min_periods=2 para que sea un promedio de al menos 2 d穩as
         df_rolled = df_pivot_filled.rolling(w_val, min_periods=MIN_PERIODS).mean().shift(1)
         
         # Renombrar columnas
@@ -128,11 +128,11 @@ def calcular_features_mercado(df_hist, group_col, target_col, date_col, windows)
 
 
 # -----------------------------------------------------------------
-# FUNCI�N 1: CALC_HIST_TRAIN (Corregida)
+# FUNCI粍 1: CALC_HIST_TRAIN (Corregida)
 # -----------------------------------------------------------------
 def calc_hist_train(df_train, empresa_col, date_col, descuento_col, tipo_col, geo_col, pres_col):
     """
-    Calcula features hist�ricas para 'train' usando .shift(1) para evitar fugas.
+    Calcula features hist鏎icas para 'train' usando .shift(1) para evitar fugas.
     """
     df = df_train.sort_values([empresa_col, date_col]).copy()
     g = df.groupby(empresa_col)
@@ -154,13 +154,13 @@ def calc_hist_train(df_train, empresa_col, date_col, descuento_col, tipo_col, ge
     else:
         df['descuento_medio_hist'] = -1.0
         
-    # 4. presupuesto_medio_hist (Tama�o)
+    # 4. presupuesto_medio_hist (Tama隳)
     if pres_col in df.columns:
         df['presupuesto_medio_hist'] = g[pres_col].transform(lambda s: s.expanding().mean().shift(1).fillna(-1.0))
     else:
         df['presupuesto_medio_hist'] = -1.0
 
-    # 5. pct_hist_{tipo_contrato} (Especializaci�n)
+    # 5. pct_hist_{tipo_contrato} (Especializaci鏮)
     if tipo_col in df.columns:
         tipos_list = list(df[tipo_col].dropna().unique())
         if len(tipos_list) > 0:
@@ -180,7 +180,7 @@ def calc_hist_train(df_train, empresa_col, date_col, descuento_col, tipo_col, ge
                 pct_hist = df[f'cum_tc_{tc_clean}'] / n_licit_safe
                 df[f'pct_hist_{tc_clean}'] = np.where(df['n_licitaciones_hist'] > 0, pct_hist, -1.0)
     
-    # 6. pct_hist_com_aut_{geografia} (Localizaci�n)
+    # 6. pct_hist_com_aut_{geografia} (Localizaci鏮)
     if geo_col in df.columns:
         geo_list = list(df[geo_col].dropna().unique())
         if len(geo_list) > 0:
@@ -200,22 +200,22 @@ def calc_hist_train(df_train, empresa_col, date_col, descuento_col, tipo_col, ge
                 pct_hist = df[f'cum_geo_{geo_clean}'] / n_licit_safe
                 df[f'pct_hist_com_aut_{geo_clean}'] = np.where(df['n_licitaciones_hist'] > 0, pct_hist, -1.0)
 
-    # --- �BLOQUE CORREGIDO! ---
+    # --- 、LOQUE CORREGIDO! ---
     # 7. Lags de Empresa (Rolling Averages por Empresa)
     print("Calculando lags por empresa (90D, 270D, 450D)...")
     
-    # Ponemos la fecha como �ndice para que .rolling('90D') funcione
+    # Ponemos la fecha como 璯dice para que .rolling('90D') funcione
     df_time = df.set_index(date_col) 
     
     for w_name, w_val in WINDOWS_MESES.items():
         col_name = f'desc_hist_emp_{w_name}'
         
-        # 1. Calculamos el rolling (que tiene un �ndice Datetime duplicado)
+        # 1. Calculamos el rolling (que tiene un 璯dice Datetime duplicado)
         rolled_series = df_time.groupby(empresa_col)[descuento_col].rolling(w_val, min_periods=MIN_PERIODS).mean().shift(1)
         
-        # 2. �LA CORRECCI�N!
-        #    Reseteamos el �ndice de (empresa, fecha) a (fecha)
-        #    y usamos .values para asignar por POSICI�N, ignorando el �ndice.
+        # 2. ‥A CORRECCI粍!
+        #    Reseteamos el 璯dice de (empresa, fecha) a (fecha)
+        #    y usamos .values para asignar por POSICI粍, ignorando el 璯dice.
         df[col_name] = rolled_series.reset_index(level=0, drop=True).values
     
     # Rellenamos los NaNs (de las primeras filas de cada empresa) con -1
@@ -226,7 +226,7 @@ def calc_hist_train(df_train, empresa_col, date_col, descuento_col, tipo_col, ge
     return df
 
 # -----------------------------------------------------------------
-# FUNCI�N 2: BUILD_HIST_SUMMARY (Corregida)
+# FUNCI粍 2: BUILD_HIST_SUMMARY (Corregida)
 # -----------------------------------------------------------------
 def build_hist_summary(df_hist, empresa_col, date_col, descuento_col, tipo_col, geo_col, pres_col):
     """
@@ -241,7 +241,7 @@ def build_hist_summary(df_hist, empresa_col, date_col, descuento_col, tipo_col, 
         if c in df.columns:
             df[f'hist_cum_sum_{c}'] = g[c].cumsum()
 
-    # pct_hist_{tipo_contrato} (L�gica original, sin cambios)
+    # pct_hist_{tipo_contrato} (L鏬ica original, sin cambios)
     if tipo_col in df.columns:
         tipos_list = list(df[tipo_col].dropna().unique())
         for tc in tipos_list:
@@ -254,7 +254,7 @@ def build_hist_summary(df_hist, empresa_col, date_col, descuento_col, tipo_col, 
                 cum_emp = mask_emp.cumsum().values
                 df.loc[idx, f'hist_cum_tc_{tc_clean}'] = cum_emp
         
-    # pct_hist_com_aut_{geografia} (L�gica original, sin cambios)
+    # pct_hist_com_aut_{geografia} (L鏬ica original, sin cambios)
     if geo_col in df.columns:
         geo_list = list(df[geo_col].dropna().unique())
         for geo in geo_list:
@@ -267,11 +267,11 @@ def build_hist_summary(df_hist, empresa_col, date_col, descuento_col, tipo_col, 
                 cum_emp = mask_emp.cumsum().values
                 df.loc[idx, f'hist_cum_geo_{geo_clean}'] = cum_emp
     
-    # --- �BLOQUE CORREGIDO! ---
-    # 7. Lags de Empresa (Rolling Averages por Empresa) - VERSI�N RESUMEN
-    print("Calculando lags por empresa (versi�n resumen)...")
+    # --- 、LOQUE CORREGIDO! ---
+    # 7. Lags de Empresa (Rolling Averages por Empresa) - VERSI粍 RESUMEN
+    print("Calculando lags por empresa (versi鏮 resumen)...")
     
-    # Ponemos la fecha como �ndice para que .rolling('90D') funcione
+    # Ponemos la fecha como 璯dice para que .rolling('90D') funcione
     df_time = df.set_index(date_col)
     
     for w_name, w_val in WINDOWS_MESES.items():
@@ -280,8 +280,8 @@ def build_hist_summary(df_hist, empresa_col, date_col, descuento_col, tipo_col, 
         # 1. Calculamos el rolling (sin .shift(1))
         rolled_series = df_time.groupby(empresa_col)[descuento_col].rolling(w_val, min_periods=MIN_PERIODS).mean()
         
-        # 2. �LA CORRECCI�N!
-        #    Asignamos los .values para ignorar el �ndice duplicado
+        # 2. ‥A CORRECCI粍!
+        #    Asignamos los .values para ignorar el 璯dice duplicado
         df[col_name] = rolled_series.reset_index(level=0, drop=True).values
     
     # Rellenamos NaNs con -1
@@ -301,11 +301,11 @@ def build_hist_summary(df_hist, empresa_col, date_col, descuento_col, tipo_col, 
     return df_final
 
 # -----------------------------------------------------------------
-# FUNCIÓN 3: APLICAR_HISTORICOS_ASOF (La lógica del merge_asof)
+# FUNCI�N 3: APLICAR_HISTORICOS_ASOF (La l籀gica del merge_asof)
 # -----------------------------------------------------------------
 def aplicar_historicos_asof(df_para_aplicar, df_resumen, empresa_col, date_col, pres_col, descuento_col):
     """
-    Aplica el resumen histórico a un df (val o test) usando merge_asof.
+    Aplica el resumen hist籀rico a un df (val o test) usando merge_asof.
     """
     df_sorted = df_para_aplicar.sort_values([empresa_col, date_col]).reset_index(drop=True)
     hist_summary_sorted = df_resumen.sort_values([empresa_col, f"{date_col}_hist"]).reset_index(drop=True)
@@ -315,7 +315,7 @@ def aplicar_historicos_asof(df_para_aplicar, df_resumen, empresa_col, date_col, 
     all_cum_tc_cols = [c for c in hist_summary_sorted.columns if c.startswith('hist_cum_tc_')]
     all_cum_geo_cols = [c for c in hist_summary_sorted.columns if c.startswith('hist_cum_geo_')]
     
-    # --- ¡NUEVO! ---
+    # --- 癒NUEVO! ---
     all_roll_emp_cols = [c for c in hist_summary_sorted.columns if c.startswith('hist_roll_emp_')]
     # --- FIN NUEVO ---
     
@@ -337,7 +337,7 @@ def aplicar_historicos_asof(df_para_aplicar, df_resumen, empresa_col, date_col, 
             for col in all_cum_geo_cols:
                 g_res[f'pct_hist_com_aut_{col.replace("hist_cum_geo_","")}'] = -1.0
             
-            # --- ¡NUEVO! ---
+            # --- 癒NUEVO! ---
             # Rellenar lags de empresa para empresas nuevas
             for col in all_roll_emp_cols:
                 g_res[f'desc_hist_emp_{col.replace("hist_roll_emp_","")}'] = -1.0
@@ -373,11 +373,11 @@ def aplicar_historicos_asof(df_para_aplicar, df_resumen, empresa_col, date_col, 
             pct_hist = merged_res[col].fillna(0) / n_licit_safe_merge
             merged_res[f'pct_hist_com_aut_{geo_clean}'] = np.where(merged_res['n_licitaciones_hist'] > 0, pct_hist, -1.0)
         
-        # --- ¡NUEVO! ---
+        # --- 癒NUEVO! ---
         # Asignar los lags de empresa
         for col_name_hist in all_roll_emp_cols:
             col_name_final = f'desc_hist_emp_{col_name_hist.replace("hist_roll_emp_","")}'
-            # El merge_asof ya nos ha dado el valor correcto (el último en el pasado)
+            # El merge_asof ya nos ha dado el valor correcto (el 繳ltimo en el pasado)
             merged_res[col_name_final] = merged_res[col_name_hist].fillna(-1.0)
         # --- FIN NUEVO ---
             
@@ -386,10 +386,10 @@ def aplicar_historicos_asof(df_para_aplicar, df_resumen, empresa_col, date_col, 
     return pd.concat(merged_list, axis=0).reset_index(drop=True)
 
 # -----------------------------------------------------------------
-# --- SCRIPT PRINCIPAL DE EJECUCIÓN (¡MODIFICADO!) ---
+# --- SCRIPT PRINCIPAL DE EJECUCI�N (癒MODIFICADO!) ---
 # -----------------------------------------------------------------
 
-# --- ¡NUEVO! PASO 0: CALCULAR LOOKUPS DE MERCADO (POR TIPO_CONTRATO) ---
+# --- 癒NUEVO! PASO 0: CALCULAR LOOKUPS DE MERCADO (POR TIPO_CONTRATO) ---
 print("\n--- PASO 0: Creando Lookups de Mercado (Anti-Fugas) ---")
 
 # 0a. Crear lookup de Train (para Train y Val)
@@ -414,7 +414,7 @@ lookup_train_val = calcular_features_mercado(
 
 
 # 1. Crear features de EMPRESA para TRAIN (usando .shift(1))
-print("\n--- PASO 1: Calculando históricos de EMPRESA para TRAIN (lógica shift(1))...")
+print("\n--- PASO 1: Calculando hist籀ricos de EMPRESA para TRAIN (l籀gica shift(1))...")
 train_df = calc_hist_train(
     train_df_orig, 
     empresa_col=GROUP_COL, 
@@ -425,19 +425,19 @@ train_df = calc_hist_train(
     pres_col=PRESUPUESTO_COL
 )
 
-# --- ¡NUEVO! PASO 1b: Añadir features de MERCADO a TRAIN ---
-print("Añadiendo features de MERCADO a TRAIN (merge_asof)...")
+# --- 癒NUEVO! PASO 1b: A簽adir features de MERCADO a TRAIN ---
+print("A簽adiendo features de MERCADO a TRAIN (merge_asof)...")
 train_df = pd.merge_asof(
     train_df.sort_values(DATE_COL),
     lookup_train,
     on=DATE_COL,
-    direction='backward' # (Encuentra la última estadística de mercado)
+    direction='backward' # (Encuentra la 繳ltima estad穩stica de mercado)
 ).fillna(-1.0) # Rellena los -1 de las primeras filas
 # --- FIN NUEVO ---
 
 
 # 2. Crear el resumen de EMPRESA de TRAIN (para consultar desde VAL)
-print("\n--- PASO 2: Construyendo resumen histórico de EMPRESA de TRAIN...")
+print("\n--- PASO 2: Construyendo resumen hist籀rico de EMPRESA de TRAIN...")
 hist_train_summary = build_hist_summary(
     train_df_orig,
     empresa_col=GROUP_COL,
@@ -449,7 +449,7 @@ hist_train_summary = build_hist_summary(
 )
 
 # 3. Aplicar resumen de EMPRESA de TRAIN a VAL
-print("\n--- PASO 3: Aplicando históricos de EMPRESA a VAL (lógica merge_asof)...")
+print("\n--- PASO 3: Aplicando hist籀ricos de EMPRESA a VAL (l籀gica merge_asof)...")
 val_df = aplicar_historicos_asof(
     val_df_orig,
     hist_train_summary,
@@ -459,11 +459,11 @@ val_df = aplicar_historicos_asof(
     descuento_col=DESCUENTO_COL
 )
 
-# --- ¡NUEVO! PASO 3b: Añadir features de MERCADO a VAL ---
-print("Añadiendo features de MERCADO a VAL (merge_asof)...")
+# --- 癒NUEVO! PASO 3b: A簽adir features de MERCADO a VAL ---
+print("A簽adiendo features de MERCADO a VAL (merge_asof)...")
 val_df = pd.merge_asof(
     val_df.sort_values(DATE_COL),
-    lookup_train, # <-- Usamos el lookup de TRAIN (¡Anti-Fugas!)
+    lookup_train, # <-- Usamos el lookup de TRAIN (癒Anti-Fugas!)
     on=DATE_COL,
     direction='backward'
 ).fillna(-1.0)
@@ -471,7 +471,7 @@ val_df = pd.merge_asof(
 
 
 # 4. Crear el resumen de EMPRESA de TRAIN+VAL (para consultar desde TEST)
-print("\n--- PASO 4: Construyendo resumen histórico de EMPRESA de TRAIN+VAL...")
+print("\n--- PASO 4: Construyendo resumen hist籀rico de EMPRESA de TRAIN+VAL...")
 hist_train_val_df = pd.concat([train_df_orig, val_df_orig], axis=0).reset_index(drop=True)
 hist_train_val_summary = build_hist_summary(
     hist_train_val_df,
@@ -484,7 +484,7 @@ hist_train_val_summary = build_hist_summary(
 )
 
 # 5. Aplicar resumen de EMPRESA de TRAIN+VAL a TEST
-print("\n--- PASO 5: Aplicando históricos de EMPRESA a TEST (lógica merge_asof)...")
+print("\n--- PASO 5: Aplicando hist籀ricos de EMPRESA a TEST (l籀gica merge_asof)...")
 test_df = aplicar_historicos_asof(
     test_df_orig,
     hist_train_val_summary,
@@ -494,11 +494,11 @@ test_df = aplicar_historicos_asof(
     descuento_col=DESCUENTO_COL
 )
 
-# --- ¡NUEVO! PASO 5b: Añadir features de MERCADO a TEST ---
-print("Añadiendo features de MERCADO a TEST (merge_asof)...")
+# --- 癒NUEVO! PASO 5b: A簽adir features de MERCADO a TEST ---
+print("A簽adiendo features de MERCADO a TEST (merge_asof)...")
 test_df = pd.merge_asof(
     test_df.sort_values(DATE_COL),
-    lookup_train_val, # <-- Usamos el lookup de TRAIN+VAL (¡Anti-Fugas!)
+    lookup_train_val, # <-- Usamos el lookup de TRAIN+VAL (癒Anti-Fugas!)
     on=DATE_COL,
     direction='backward'
 ).fillna(-1.0)
@@ -508,7 +508,7 @@ test_df = pd.merge_asof(
 # -----------------------------------------------------------------
 # --- PASO 6: LIMPIEZA FINAL DE COLUMNAS ---
 # -----------------------------------------------------------------
-print("\n--- PASO 6: Limpiando columnas de cálculo intermedias... ---")
+print("\n--- PASO 6: Limpiando columnas de c獺lculo intermedias... ---")
 
 final_features = [
     'n_licitaciones_hist',
@@ -516,7 +516,7 @@ final_features = [
     'descuento_medio_hist',
     'presupuesto_medio_hist',
 ]
-# Añadir todas las 'pct_hist_', 'desc_hist_emp_' y 'mercado_'
+# A簽adir todas las 'pct_hist_', 'desc_hist_emp_' y 'mercado_'
 final_features.extend([col for col in train_df.columns if col.startswith('pct_hist_')])
 final_features.extend([col for col in train_df.columns if col.startswith('desc_hist_emp_')]) # <-- NUEVO
 final_features.extend([col for col in train_df.columns if col.startswith('mercado_')]) # <-- NUEVO
@@ -539,6 +539,6 @@ print("\n--- PASO 7: Guardando DataFrames procesados en formato Parquet... ---")
 train_df.to_parquet(RUTA_GUARDADO + r"\train_procesado_v3_lags.parquet")
 val_df.to_parquet(RUTA_GUARDADO + r"\val_procesado_v3_lags.parquet")
 test_df.to_parquet(RUTA_GUARDADO + r"\test_procesado_v3_lags.parquet")
-print("¡Guardado completado en '..._v3_lags.parquet'!")
+print("癒Guardado completado en '..._v3_lags.parquet'!")
 
-print("\nScript de creación de históricos (con lags) completado.")
+print("\nScript de creaci籀n de hist籀ricos (con lags) completado.")
