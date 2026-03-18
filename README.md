@@ -15,4 +15,4 @@ A key mathematical focus of this thesis is not just the prediction itself, but *
 * **Data Visualization:** Matplotlib, PowerBI
 
 ## Author
-* **Pau Mingot Lapiedra** - *Final-year Mathematics Undergraduate | Data Science Focus*
+* **Pau Mingot Lapiedra**
