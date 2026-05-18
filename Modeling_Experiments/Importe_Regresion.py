@@ -8,10 +8,11 @@ import warnings
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.model_selection import GridSearchCV, PredefinedSplit
 
 warnings.filterwarnings('ignore', category=UserWarning)
 
@@ -47,8 +48,6 @@ train_df = pd.read_parquet(TRAIN_PATH)
 val_df   = pd.read_parquet(VAL_PATH)
 test_df  = pd.read_parquet(TEST_PATH)
 
-full_train_df = pd.concat([train_df, val_df], ignore_index=True)
-
 def limpiar_df_estricto(df):
     """Aplica la limpieza estricta (Estándar TFG)"""
     start_len = len(df)
@@ -72,15 +71,29 @@ def limpiar_df_estricto(df):
     return df
 
 print("\n🧹 Aplicando limpieza estricta...")
-print("Train+Val:")
-full_train_df = limpiar_df_estricto(full_train_df)
+print("Train:")
+train_df = limpiar_df_estricto(train_df)
+print("Val:")
+val_df = limpiar_df_estricto(val_df)
 print("Test:")
 test_df = limpiar_df_estricto(test_df)
+
+# Concatenamos para el GridSearch, pero guardamos los índices de quién es quién
+full_train_df = pd.concat([train_df, val_df], ignore_index=True)
+
+# ------------------------------------------------------------
+# 2.5. CONFIGURACIÓN DEL PREDEFINED SPLIT (EVITAR DATA LEAKAGE)
+# ------------------------------------------------------------
+# -1 indica que pertenece a TRAIN, 0 indica que pertenece a VALIDATION
+test_fold = np.concatenate([
+    np.full(len(train_df), -1),
+    np.zeros(len(val_df))
+])
+ps = PredefinedSplit(test_fold)
 
 # ------------------------------------------------------------
 # 3. PREPARACIÓN DE TARGETS Y HELPER PARA METRICAS
 # ------------------------------------------------------------
-# En Importe, predecimos el Logaritmo para estabilizar
 y_train_log = np.log1p(full_train_df[TARGET])
 y_test_log = np.log1p(test_df[TARGET])
 
@@ -88,7 +101,6 @@ y_test_euros_real = test_df[TARGET].values
 presupuesto_test = test_df[PRESUPUESTO].values
 
 def evaluar_en_euros(modelo_nombre, y_pred_log):
-    # Destransformamos (expm1) para evaluar en euros reales
     y_pred_log_segura = np.clip(y_pred_log, -np.inf, 30)
     y_pred_euros = np.expm1(y_pred_log_segura)
     y_pred_euros[y_pred_euros < 0] = 0
@@ -130,10 +142,10 @@ y_pred_test_1_log = model_simple.predict(X_test_log_1)
 metrics_mod1 = evaluar_en_euros('Regresión Simple (Test)', y_pred_test_1_log)
 
 # ------------------------------------------------------------
-# 6. MODELO 2: REGRESIÓN RIDGE "TOP 3"
+# 6. MODELO 2: REGRESIÓN RIDGE "TOP 3" (Omitido GridSearch por simplicidad)
 # ------------------------------------------------------------
 print("\n" + "="*60)
-print("--- MODELO 2: Regresión Ridge (Presupuesto + Historial + Proc.) ---")
+print("--- MODELO 2: Regresión Ridge Top 3 (Baseline Multivariante) ---")
 
 FEATURES_NUM_2 = [PRESUPUESTO, 'descuento_medio_hist']
 FEATURES_CAT_2 = ['tipo_procedimiento']
@@ -167,12 +179,11 @@ y_pred_test_2_log = pipeline_ridge_2.predict(X_test_m2)
 metrics_mod2 = evaluar_en_euros('Ridge Top 3 (Test)', y_pred_test_2_log)
 
 # ------------------------------------------------------------
-# 7. MODELO 3: REGRESIÓN RIDGE "TOP 10 REAL (CART IMPORTE)"
+# 7. MODELOS OPTIMIZADOS: RIDGE, LASSO Y ELASTIC NET "TOP 10 REAL"
 # ------------------------------------------------------------
 print("\n" + "="*60)
-print("--- MODELO 3: Regresión Ridge (Top 10 Variables REALES del Importe) ---")
+print("--- INICIANDO BÚSQUEDA DE HIPERPARÁMETROS (GRID SEARCH TEMPORAL) ---")
 
-# 🚨 ACTUALIZACIÓN: TOP 10 extraído exclusivamente del Árbol de Importe
 FEATURES_NUM_10 = [
     'lote_presupuesto_base_sin_impuestos', 
     'descuento_medio_hist', 
@@ -202,65 +213,105 @@ X_test_m3.drop(columns=FEATURES_NUM_10, inplace=True)
 
 numeric_cols_10 = [c for c in X_train_m3.columns if c.startswith('log_')]
 
-preprocessor_ridge_10 = ColumnTransformer(
+preprocessor_10 = ColumnTransformer(
     transformers=[
         ('num', StandardScaler(), numeric_cols_10),
         ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False, drop='first'), FEATURES_CAT_10)
     ], remainder='passthrough'
 )
 
-pipeline_ridge_10 = Pipeline(steps=[
-    ('preprocessor', preprocessor_ridge_10),
-    ('model', Ridge(random_state=42, alpha=1.0))
-])
+# Pipelines base
+pipe_ridge = Pipeline(steps=[('preprocessor', preprocessor_10), ('model', Ridge(random_state=42))])
+pipe_lasso = Pipeline(steps=[('preprocessor', preprocessor_10), ('model', Lasso(random_state=42, max_iter=10000))])
+pipe_elastic = Pipeline(steps=[('preprocessor', preprocessor_10), ('model', ElasticNet(random_state=42, max_iter=10000))])
 
-pipeline_ridge_10.fit(X_train_m3, y_train_log)
-y_pred_test_3_log = pipeline_ridge_10.predict(X_test_m3)
-metrics_mod3 = evaluar_en_euros('Ridge Top 10 Real (Test)', y_pred_test_3_log)
+# Mallas de parámetros
+param_grid_ridge = {'model__alpha': [0.1, 1.0, 10.0, 100.0, 500.0]}
+param_grid_lasso = {'model__alpha': [0.0001, 0.001, 0.01, 0.1, 1.0]}
+param_grid_elastic = {
+    'model__alpha': [0.0001, 0.001, 0.01, 0.1],
+    'model__l1_ratio': [0.2, 0.5, 0.8] 
+}
+
+print("⏳ Optimizando Ridge...")
+grid_ridge = GridSearchCV(pipe_ridge, param_grid_ridge, cv=ps, scoring='neg_mean_absolute_error', n_jobs=-1, refit=True)
+grid_ridge.fit(X_train_m3, y_train_log)
+
+print("⏳ Optimizando Lasso...")
+grid_lasso = GridSearchCV(pipe_lasso, param_grid_lasso, cv=ps, scoring='neg_mean_absolute_error', n_jobs=-1, refit=True)
+grid_lasso.fit(X_train_m3, y_train_log)
+
+print("⏳ Optimizando Elastic Net...")
+grid_elastic = GridSearchCV(pipe_elastic, param_grid_elastic, cv=ps, scoring='neg_mean_absolute_error', n_jobs=-1, refit=True)
+grid_elastic.fit(X_train_m3, y_train_log)
+
+best_ridge = grid_ridge.best_estimator_
+best_lasso = grid_lasso.best_estimator_
+best_elastic = grid_elastic.best_estimator_
+
+print("\n🎯 Mejores hiperparámetros encontrados (Importe):")
+print(f"  - Ridge: {grid_ridge.best_params_}")
+print(f"  - Lasso: {grid_lasso.best_params_}")
+print(f"  - Elastic Net: {grid_elastic.best_params_}")
+
+metrics_ridge = evaluar_en_euros('Ridge Optimizado (Test)', best_ridge.predict(X_test_m3))
+metrics_lasso = evaluar_en_euros('Lasso Optimizado (Test)', best_lasso.predict(X_test_m3))
+metrics_elastic = evaluar_en_euros('Elastic Net Optimizado (Test)', best_elastic.predict(X_test_m3))
 
 # ------------------------------------------------------------
-# 8. MODELO 4: REGRESIÓN LASSO "TOP 10 REAL"
+# 7.5 DIAGNÓSTICO DE OVERFITTING (SÓLO LASSO - ESCALA REAL EUROS)
 # ------------------------------------------------------------
 print("\n" + "="*60)
-print("--- MODELO 4: Regresión Lasso (Top 10 Variables REALES) ---")
+print("--- DIAGNÓSTICO DE OVERFITTING (LASSO) ---")
 
-pipeline_lasso_10 = Pipeline(steps=[
-    ('preprocessor', preprocessor_ridge_10),
-    ('model', Lasso(random_state=42, alpha=0.001, max_iter=10000))
-])
+# 1. Recuperamos los euros reales de Train
+y_train_euros_real = full_train_df[TARGET].values
 
-pipeline_lasso_10.fit(X_train_m3, y_train_log)
-y_pred_test_4_log = pipeline_lasso_10.predict(X_test_m3)
-metrics_mod4 = evaluar_en_euros('Lasso Top 10 Real (Test)', y_pred_test_4_log)
+# 2. Predecimos en Train con Lasso (el modelo escupe logaritmos)
+y_pred_train_log = best_lasso.predict(X_train_m3)
+
+# 3. Destransformamos a Euros Reales
+y_pred_train_log_segura = np.clip(y_pred_train_log, -np.inf, 30)
+y_pred_train_euros = np.expm1(y_pred_train_log_segura)
+y_pred_train_euros[y_pred_train_euros < 0] = 0
+
+# 4. Calculamos métricas en Train
+r2_train_lasso = r2_score(y_train_euros_real, y_pred_train_euros)
+mae_train_lasso = mean_absolute_error(y_train_euros_real, y_pred_train_euros)
+
+# 5. Imprimimos comparativa Train vs Test
+print(f"R²  Train: {r2_train_lasso:.4f}  |  R²  Test: {metrics_lasso['R²']:.4f}")
+print(f"MAE Train: {mae_train_lasso:,.2f} € |  MAE Test: {metrics_lasso['MAE (€)']:,.2f} €")
+
+if mae_train_lasso > 0:
+    diferencia_mae = ((metrics_lasso['MAE (€)'] - mae_train_lasso) / mae_train_lasso) * 100
+    print(f"-> Degradación del MAE en Test: {diferencia_mae:+.1f}%")
 
 # ------------------------------------------------------------
-# 9. TABLA COMPARATIVA FINAL (CON MdAPE)
+# 8. TABLA COMPARATIVA FINAL 
 # ------------------------------------------------------------
 print("\n" + "="*60)
 print("🏆 RESUMEN FINAL ACTUALIZADO (Importe Directo) 🏆")
-df_final = pd.DataFrame([metrics_baseline, metrics_mod1, metrics_mod2, metrics_mod3, metrics_mod4])
+df_final = pd.DataFrame([metrics_baseline, metrics_mod1, metrics_mod2, metrics_ridge, metrics_lasso, metrics_elastic])
 print(df_final[['Modelo', 'R²', 'MAE (€)', 'MdAPE (%)']].to_markdown(index=False, floatfmt=",.4f"))
 
 # ------------------------------------------------------------
-# 10. EXPLICABILIDAD (COEFICIENTES LASSO)
+# 9. EXPLICABILIDAD (COEFICIENTES DEL MEJOR MODELO)
+# (Asumimos Lasso Optimizado como ganador por defecto para el gráfico, puedes cambiar a best_ridge o best_elastic si ganan)
 # ------------------------------------------------------------
 print("\n" + "="*60)
-print("--- INTERPRETACIÓN DE COEFICIENTES (Lasso Top 10 Real) ---")
+print("--- INTERPRETACIÓN DE COEFICIENTES (Lasso Optimizado) ---")
 try:
-    feature_names = pipeline_lasso_10.named_steps['preprocessor'].get_feature_names_out()
-    coefs = pipeline_lasso_10.named_steps['model'].coef_
+    feature_names = best_lasso.named_steps['preprocessor'].get_feature_names_out()
+    coefs = best_lasso.named_steps['model'].coef_
     
     df_coef = pd.DataFrame({'Variable': feature_names, 'Impacto_Coeficiente_Log': coefs})
     df_coef['Impacto_Absoluto'] = df_coef['Impacto_Coeficiente_Log'].abs()
     
-    # ¡NUEVO! Comprobamos cuántas variables ha eliminado Lasso
     vars_eliminadas = len(df_coef[df_coef['Impacto_Coeficiente_Log'] == 0])
     print(f"Lasso ha eliminado {vars_eliminadas} variables (asignándoles coeficiente 0.0).")
     
     df_coef = df_coef.sort_values('Impacto_Absoluto', ascending=False)
-    
-    print("\nTop 15 variables con más impacto en predecir EL IMPORTE (Escala Log):")
-    print(df_coef[['Variable', 'Impacto_Coeficiente_Log']].head(15).to_markdown(index=False, floatfmt=",.4f"))
     
     plt.figure(figsize=(10, 8))
     sns.barplot(
@@ -271,31 +322,26 @@ try:
         legend=False,        
         palette="vlag"
     )
-    plt.title("Impacto de las Variables en el Importe (Lasso Top 10 Real)")
+    plt.title("Impacto de las Variables en el Importe (Lasso Optimizado)")
     plt.xlabel("Coeficiente Log (+ implica encarecimiento, - implica abaratamiento)")
     plt.ylabel("Variable")
     plt.tight_layout()
     plt.savefig(OUTPUT_DIR / "importancia_coeficientes_lasso_importe_real.png", dpi=300)
     plt.close()
     
-    print(f"\n✅ Gráfico de coeficientes guardado en {OUTPUT_DIR / 'importancia_coeficientes_lasso_importe_real.png'}")
-    
 except Exception as e:
     print(f"Error al generar la interpretabilidad: {e}")
 
-joblib.dump(pipeline_lasso_10, OUTPUT_DIR / "regresion_lasso_top10_importe_real.pkl")
-
+joblib.dump(best_lasso, OUTPUT_DIR / "regresion_lasso_top10_importe_real_optimizado.pkl")
 
 # ------------------------------------------------------------
-# 11. ANÁLISIS GRÁFICO (ERRORES Y RESIDUOS SEPARADOS CON ZOOM)
+# 10. ANÁLISIS GRÁFICO (ERRORES Y RESIDUOS)
 # ------------------------------------------------------------
 print("\n" + "="*60)
-print("--- GENERANDO GRÁFICOS DE RENDIMIENTO (Separados y con Zoom) ---")
+print("--- GENERANDO GRÁFICOS DE RENDIMIENTO ---")
 
 try:
-    # Reconstruimos la predicción del modelo ganador (Lasso Top 10) en euros
-    # Usamos y_pred_test_4_log porque es la variable donde se guardó la predicción de Lasso
-    y_pred_log_segura = np.clip(y_pred_test_4_log, -np.inf, 30)
+    y_pred_log_segura = np.clip(best_lasso.predict(X_test_m3), -np.inf, 30)
     y_pred_lasso_euros = np.expm1(y_pred_log_segura)
     y_pred_lasso_euros[y_pred_lasso_euros < 0] = 0
 
@@ -308,20 +354,17 @@ try:
     df_results['APE_Lasso'] = 100 * (np.abs(df_results['Real'] - df_results['Prediccion_Lasso'])) / df_results['Real']
     df_results['APE_Baseline'] = 100 * (np.abs(df_results['Real'] - df_results['Prediccion_Baseline'])) / df_results['Real']
 
-    # --- 1. Gráfico Boxplot APE ---
     plt.figure(figsize=(10, 5))
     sns.boxplot(
         data=df_results[['APE_Baseline', 'APE_Lasso']],
         orient='h',
         showfliers=False,
-        palette=['#4C72B0', '#55A868'] # Verde para diferenciar Lasso del naranja de Ridge
+        palette=['#4C72B0', '#55A868'] 
     )
-    plt.title('Distribución del Error Porcentual Absoluto (APE)\nBaseline vs. Lasso Top 10 Real (Importe)', fontsize=13, fontweight='bold')
+    plt.title('Distribución del Error Porcentual Absoluto (APE)\nBaseline vs. Lasso Optimizado (Importe)', fontsize=13, fontweight='bold')
     plt.xlabel('Error Porcentual Absoluto (APE %) - Escala Logarítmica')
-    
     plt.gca().set_xscale('log')
-    plt.xlim(0.1, 300) # Fijamos escala para comparar limpiamente
-    
+    plt.xlim(0.1, 300) 
     plt.axvline(x=df_results['APE_Baseline'].median(), color='blue', linestyle='--', label=f"MdAPE Baseline ({df_results['APE_Baseline'].median():.2f}%)")
     plt.axvline(x=df_results['APE_Lasso'].median(), color='darkgreen', linestyle='--', label=f"MdAPE Lasso ({df_results['APE_Lasso'].median():.2f}%)")
     plt.legend()
@@ -329,34 +372,15 @@ try:
     plt.savefig(OUTPUT_DIR / '1_comparativa_error_boxplot_Lasso.png', dpi=300)
     plt.close()
 
-    # --- CÁLCULO DE LÍMITES PARA EL ZOOM (Recorte del 0.5% extremo) ---
     min_val_zoom = max(10.0, df_results['Real'].quantile(0.005)) 
     max_val_zoom = df_results['Real'].quantile(0.995)
 
-    # --- 2. Gráfico Scatter: BASELINE ---
-    plt.figure(figsize=(8, 8))
-    plt.scatter(df_results['Real'], df_results['Prediccion_Baseline'], alpha=0.15, s=10, color='#4C72B0')
-    plt.xscale('log')
-    plt.yscale('log')
-    plt.plot([min_val_zoom, max_val_zoom], [min_val_zoom, max_val_zoom], color='red', linestyle='--', linewidth=2, label='Predicción Perfecta (y=x)')
-    plt.title("Baseline Absoluto\n(Asume Adjudicación = Presupuesto)", fontsize=14, fontweight='bold')
-    plt.xlabel("Valor Real Adjudicado (€) [Escala Log]", fontsize=12)
-    plt.ylabel("Valor Predicho (€) [Escala Log]", fontsize=12)
-    plt.xlim(min_val_zoom, max_val_zoom)
-    plt.ylim(min_val_zoom, max_val_zoom)
-    plt.grid(True, which="both", ls="--", alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / '2_scatter_Baseline_Zoom.png', dpi=300)
-    plt.close()
-
-    # --- 3. Gráfico Scatter: LASSO TOP 10 REAL ---
     plt.figure(figsize=(8, 8))
     plt.scatter(df_results['Real'], df_results['Prediccion_Lasso'], alpha=0.15, s=10, color='#55A868')
     plt.xscale('log')
     plt.yscale('log')
     plt.plot([min_val_zoom, max_val_zoom], [min_val_zoom, max_val_zoom], color='red', linestyle='--', linewidth=2, label='Predicción Perfecta (y=x)')
-    plt.title("Modelo Lasso (Top 10 Real Importe)\n(Predicción Directa Log-Log)", fontsize=14, fontweight='bold')
+    plt.title("Modelo Lasso Optimizado\n(Predicción Directa Log-Log)", fontsize=14, fontweight='bold')
     plt.xlabel("Valor Real Adjudicado (€) [Escala Log]", fontsize=12)
     plt.ylabel("Valor Predicho (€) [Escala Log]", fontsize=12)
     plt.xlim(min_val_zoom, max_val_zoom)
@@ -367,9 +391,7 @@ try:
     plt.savefig(OUTPUT_DIR / '3_scatter_Lasso_Zoom.png', dpi=300)
     plt.close()
 
-    print("✅ Gráficos separados y con zoom generados correctamente en la carpeta de salida.")
-
 except Exception as e:
     print(f"Error generando gráficos: {e}")
 
-print("\n🎉 ¡Script completado!")
+print("\n🎉 ¡Script Importe completado!")

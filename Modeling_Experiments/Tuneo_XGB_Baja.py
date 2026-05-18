@@ -1,8 +1,7 @@
 import pandas as pd
 import numpy as np
 from sklearn.metrics import mean_absolute_error
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.pipeline import Pipeline
+from xgboost import XGBRegressor
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder
 from pathlib import Path
@@ -19,11 +18,11 @@ RUTA = Path(r"C:\Users\User\Documents\InferIA")
 TRAIN_PATH = RUTA / "train_procesado_v2_limpio.parquet"
 VAL_PATH   = RUTA / "val_procesado_v2_limpio.parquet"
 
-TARGET = 'pct_baja'  # <--- CAMBIADO AL PORCENTAJE DE BAJA
+TARGET = 'pct_baja'  # <--- Target: Porcentaje de Baja
 PRESUPUESTO_COL = 'lote_presupuesto_base_sin_impuestos'
 IMPORTE_COL = 'lote_importe_adjudicacion_sin_impuestos'
 
-OUTPUT_DIR = RUTA / "Tuning_RF_Baja"
+OUTPUT_DIR = RUTA / "Tuning_XGB_Baja"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 def limpiar_df_estricto(df):
@@ -64,19 +63,21 @@ DROP_COLS = [
     IMPORTE_COL, # <--- VITAL BORRARLO AQUÍ (El modelo no lo verá)
     'es_exito', 'es_sobrecoste', 'lote_numero_ofertas_recibidas', 
     'presupuesto_medio_hist', 'descuento_promedio', 
-    'lote_precio_oferta_mas_alta', 'lote_precio_oferta_mas_baja', 'presupuesto_base_sin_impuestos'
+    'lote_precio_oferta_mas_alta', 'lote_precio_oferta_mas_baja', 'presupuesto_base_sin_impuestos',
+    'num_proceso_dias'
 ]
+
 train_df.drop(columns=[c for c in DROP_COLS if c in train_df.columns], inplace=True, errors='ignore')
 val_df.drop(columns=[c for c in DROP_COLS if c in val_df.columns], inplace=True, errors='ignore')
 
-# Variables (¡SIN LOGARITMOS EN LA Y!)
+# Variables (¡SIN LOGARITMOS EN LA Y! Predicimos el porcentaje directamente)
 X_train = train_df.drop(columns=[TARGET])
 y_train = train_df[TARGET].values
 
 X_val = val_df.drop(columns=[TARGET])
 y_val = val_df[TARGET].values 
 
-# Preprocesador (CART usa X originales, no logaritmos)
+# Preprocesador
 numeric_cols = X_train.select_dtypes(include=np.number).columns.tolist()
 cat_cols = X_train.select_dtypes(include=['object', 'category']).columns.tolist()
 
@@ -92,101 +93,68 @@ print("Transformando variables categóricas...")
 X_train_trans = preprocessor.fit_transform(X_train)
 X_val_trans = preprocessor.transform(X_val)
 
-
 # ------------------------------------------------------------
-# 2. FASE 1: GRID SEARCH (Arquitectura del Árbol)
+# 2. FASE 1: GRID SEARCH CON EARLY STOPPING (EVALUANDO EN EUROS)
 # ------------------------------------------------------------
 print("\n" + "="*50)
-print("--- FASE 1: BUSCANDO LA ESTRUCTURA ÓPTIMA (EVALUANDO EN EUROS) ---")
+print("--- BUSCANDO HIPERPARÁMETROS (Explorando la frontera superior) ---")
 
+# Cuadrícula desplazada hacia arriba basándonos en los resultados anteriores
 param_grid = {
-    'max_depth': [10, 15, 20],       
-    'min_samples_leaf': [2, 4, 8],    
-    'max_features': [0.5, 0.8, 'sqrt'] 
+    'learning_rate': [0.05, 0.1],     
+    'max_depth': [15, 20],            # <--- Subimos el límite de profundidad  
+    'reg_lambda': [10, 20, 40],       # <--- Subimos mucho la regularización L2      
+    'gamma': [0, 1],                  
+    'subsample': [0.8],               
+    'colsample_bytree': [0.8]         
 }
 
 best_mae_euros = float('inf')
 best_params = {}
+best_n_trees = 0
 
 keys, values = zip(*param_grid.items())
 combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
-print(f"Probando {len(combinations)} combinaciones (con n_estimators=100 fijo)...")
+print(f"Probando {len(combinations)} combinaciones...")
 
 for idx, params in enumerate(combinations):
-    rf = RandomForestRegressor(
-        n_estimators=100, 
+    xgb = XGBRegressor(
+        n_estimators=1500, 
         random_state=42, 
-        n_jobs=-1, 
+        n_jobs=-1,
+        early_stopping_rounds=50, 
+        eval_metric="mae",   # <--- AHORA SE PONE AQUÍ (En la definición del modelo)
         **params
     )
-    # Entrenamiento directo (aprendiendo porcentajes)
-    rf.fit(X_train_trans, y_train)
+    
+    # Entrenamos (XGBoost vigilará el MAE automáticamente)
+    xgb.fit(
+        X_train_trans, y_train,
+        eval_set=[(X_val_trans, y_val)],
+        verbose=False
+    )
     
     # Predicción directa de la BAJA en %
-    pred_val_baja = rf.predict(X_val_trans)
+    pred_val_baja = xgb.predict(X_val_trans)
     
-    # 🚨 DESTRANSFORMACIÓN MATEMÁTICA A EUROS
-    # Importe_Predicho = Presupuesto - (Baja% / 100) * Presupuesto
-    pred_val_euros = presupuesto_val - (pred_val_baja / 100.0) * presupuesto_val
+    # DESTRANSFORMACIÓN MATEMÁTICA A EUROS
+    pred_val_baja_segura = np.clip(pred_val_baja, 0.0, 100.0)
+    pred_val_euros = presupuesto_val - (pred_val_baja_segura / 100.0) * presupuesto_val
     
     # Calculamos el error absoluto comparando euros contra euros
     mae_val_euros = mean_absolute_error(y_val_euros_real, pred_val_euros)
+    n_trees = xgb.best_iteration
     
-    print(f"[{idx+1}/{len(combinations)}] {params} --> MAE Val: {mae_val_euros:,.0f} €")
+    print(f"[{idx+1}/{len(combinations)}] Árboles: {n_trees} | MAE Val: {mae_val_euros:,.0f} € | Params: {params}")
     
     if mae_val_euros < best_mae_euros:
         best_mae_euros = mae_val_euros
         best_params = params
+        best_n_trees = n_trees
 
-print(f"\n🏆 MEJORES PARÁMETROS ENCONTRADOS: {best_params} (MAE: {best_mae_euros:,.0f} €)")
-
-
-# ------------------------------------------------------------
-# 3. FASE 2: CURVA DE CONVERGENCIA (n_estimators)
-# ------------------------------------------------------------
 print("\n" + "="*50)
-print("--- FASE 2: BUSCANDO EL NÚMERO ÓPTIMO DE ÁRBOLES ---")
-
-n_trees_list = list(range(25, 400, 25)) 
-mae_scores_euros = []
-
-for n in n_trees_list:
-    rf_final = RandomForestRegressor(
-        n_estimators=n,
-        random_state=42,
-        n_jobs=-1,
-        **best_params
-    )
-    rf_final.fit(X_train_trans, y_train)
-    
-    pred_val_baja = rf_final.predict(X_val_trans)
-    pred_val_euros = presupuesto_val - (pred_val_baja / 100.0) * presupuesto_val
-    
-    mae_val_euros = mean_absolute_error(y_val_euros_real, pred_val_euros)
-    mae_scores_euros.append(mae_val_euros)
-    print(f"Árboles: {n} -> MAE Val: {mae_val_euros:,.0f} €")
-
-
-# ------------------------------------------------------------
-# 4. GRÁFICO DE CONVERGENCIA PARA LA MEMORIA
-# ------------------------------------------------------------
-plt.figure(figsize=(10, 6))
-plt.plot(n_trees_list, mae_scores_euros, marker='o', linestyle='-', color='#E1812C', linewidth=2)
-plt.title("Curva de Convergencia del Error (RF - Vía Porcentaje de Baja)\nDemostración Empírica del Límite de Breiman en Euros", fontsize=14, fontweight='bold')
-plt.xlabel("Número de Árboles en el Ensamble (K)", fontsize=12)
-plt.ylabel("Error Absoluto Medio (MAE) en Euros - Conjunto de Validación", fontsize=12)
-plt.grid(True, linestyle='--', alpha=0.7)
-
-best_idx = np.argmin(mae_scores_euros)
-best_n = n_trees_list[best_idx]
-best_score = mae_scores_euros[best_idx]
-plt.axvline(x=best_n, color='red', linestyle='--', label=f'Óptimo / Estabilización (K={best_n})')
-
-plt.legend()
-plt.tight_layout()
-plt.savefig(OUTPUT_DIR / "Curva_Convergencia_Breiman_Baja_Euros.png", dpi=300)
-plt.close()
-
-print(f"\n✅ Gráfico de convergencia guardado en {OUTPUT_DIR}")
-print(f"\n💡 CONCLUSIÓN PARA TU TFG: Configura tu script RF_Baja.py con n_estimators={best_n} y {best_params}")
+print(f"🏆 MEJORES PARÁMETROS: {best_params}")
+print(f"🌲 Número óptimo de árboles: {best_n_trees}")
+print(f"📉 Mejor MAE en Euros: {best_mae_euros:,.0f} €")
+print("💡 COPIA estos datos para tu script XGB_ganador_baja.py")

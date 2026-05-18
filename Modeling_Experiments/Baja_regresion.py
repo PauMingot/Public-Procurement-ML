@@ -8,10 +8,11 @@ import warnings
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.model_selection import GridSearchCV, PredefinedSplit
 
 warnings.filterwarnings('ignore', category=UserWarning)
 
@@ -32,7 +33,6 @@ OUTPUT_DIR = RUTA / "salida_modelo_Regresion_Baja"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 def mdape(y_true, y_pred):
-    """Calcula el Error Porcentual Absoluto Mediano"""
     y_true = np.asarray(y_true)
     y_pred = np.asarray(y_pred)
     mask = y_true > 0
@@ -48,10 +48,7 @@ train_df = pd.read_parquet(TRAIN_PATH)
 val_df   = pd.read_parquet(VAL_PATH)
 test_df  = pd.read_parquet(TEST_PATH)
 
-full_train_df = pd.concat([train_df, val_df], ignore_index=True)
-
 def limpiar_df_y_crear_baja(df):
-    """Aplica la limpieza estricta y calcula el % de baja"""
     start_len = len(df)
     VALOR_ESTIMADO = 'valor_estimado_imputado'
     
@@ -61,7 +58,6 @@ def limpiar_df_y_crear_baja(df):
     if PRESUPUESTO in df.columns and VALOR_ESTIMADO in df.columns:
         df = df[df[PRESUPUESTO] <= df[VALOR_ESTIMADO]].copy()
     
-    # Filtros de importe
     if IMPORTE_ADJ in df.columns:
         df.dropna(subset=[IMPORTE_ADJ], inplace=True) 
         df = df[df[IMPORTE_ADJ] > 0].copy() 
@@ -70,17 +66,29 @@ def limpiar_df_y_crear_baja(df):
     if PRESUPUESTO in df.columns and VALOR_ESTIMADO in df.columns:
         df = df[df[VALOR_ESTIMADO] <= (df[PRESUPUESTO] * 10)].copy()
         
-    # 🎯 CREAR TARGET DE BAJA (0.0 a 1.0)
     df[TARGET] = (df[PRESUPUESTO] - df[IMPORTE_ADJ]) / df[PRESUPUESTO]
         
     print(f"  Limpieza: {start_len} -> {len(df)} filas.")
     return df
 
 print("\n🧹 Aplicando limpieza estricta y calculando bajas...")
-print("Train+Val:")
-full_train_df = limpiar_df_y_crear_baja(full_train_df)
+print("Train:")
+train_df = limpiar_df_y_crear_baja(train_df)
+print("Val:")
+val_df = limpiar_df_y_crear_baja(val_df)
 print("Test:")
 test_df = limpiar_df_y_crear_baja(test_df)
+
+full_train_df = pd.concat([train_df, val_df], ignore_index=True)
+
+# ------------------------------------------------------------
+# 2.5. CONFIGURACIÓN DEL PREDEFINED SPLIT (EVITAR DATA LEAKAGE)
+# ------------------------------------------------------------
+test_fold = np.concatenate([
+    np.full(len(train_df), -1),
+    np.zeros(len(val_df))
+])
+ps = PredefinedSplit(test_fold)
 
 # ------------------------------------------------------------
 # 3. PREPARACIÓN DE TARGETS Y HELPER PARA METRICAS
@@ -92,7 +100,6 @@ presupuesto_test = test_df[PRESUPUESTO].values
 y_test_euros_real = test_df[IMPORTE_ADJ].values
 
 def evaluar_en_euros(modelo_nombre, y_pred_baja):
-    # Clipiamos la baja entre 0% y 99% para traducir a euros
     y_pred_baja_segura = np.clip(y_pred_baja, 0.0, 0.99)
     y_pred_euros = presupuesto_test * (1 - y_pred_baja_segura)
     
@@ -100,7 +107,7 @@ def evaluar_en_euros(modelo_nombre, y_pred_baja):
         'Modelo': modelo_nombre,
         'R² (Euros)': r2_score(y_test_euros_real, y_pred_euros),
         'MAE (€)': mean_absolute_error(y_test_euros_real, y_pred_euros),
-        'MdAPE (%)': mdape(y_test_euros_real, y_pred_euros) # <-- Añadido MdAPE
+        'MdAPE (%)': mdape(y_test_euros_real, y_pred_euros) 
     }
 
 # ------------------------------------------------------------
@@ -127,47 +134,10 @@ y_pred_test_1_baja = model_simple.predict(X_test_log)
 metrics_mod1 = evaluar_en_euros('Regresión Simple (Test)', y_pred_test_1_baja)
 
 # ------------------------------------------------------------
-# 6. MODELO 2: REGRESIÓN RIDGE "TOP 3"
+# 6. MODELOS OPTIMIZADOS: RIDGE, LASSO Y ELASTIC NET "TOP 10 REAL"
 # ------------------------------------------------------------
 print("\n" + "="*60)
-print("--- MODELO 2: Regresión Ridge (Presupuesto + Historial + Proc.) ---")
-
-FEATURES_NUM_2 = [PRESUPUESTO, 'descuento_medio_hist']
-FEATURES_CAT_2 = ['tipo_procedimiento']
-
-X_train_m2 = full_train_df[FEATURES_NUM_2 + FEATURES_CAT_2].copy()
-X_test_m2 = test_df[FEATURES_NUM_2 + FEATURES_CAT_2].copy()
-
-for col in FEATURES_NUM_2:
-    X_train_m2.loc[:, f'log_{col}'] = np.log1p(X_train_m2[col].clip(0))
-    X_test_m2.loc[:, f'log_{col}'] = np.log1p(X_test_m2[col].clip(0))
-    
-X_train_m2.drop(columns=FEATURES_NUM_2, inplace=True)
-X_test_m2.drop(columns=FEATURES_NUM_2, inplace=True)
-
-numeric_cols_2 = [c for c in X_train_m2.columns if c.startswith('log_')]
-
-preprocessor_ridge_2 = ColumnTransformer(
-    transformers=[
-        ('num', StandardScaler(), numeric_cols_2),
-        ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False, drop='first'), FEATURES_CAT_2)
-    ], remainder='passthrough'
-)
-
-pipeline_ridge_2 = Pipeline(steps=[
-    ('preprocessor', preprocessor_ridge_2),
-    ('model', Ridge(random_state=42, alpha=1.0))
-])
-
-pipeline_ridge_2.fit(X_train_m2, y_train_baja)
-y_pred_test_2_baja = pipeline_ridge_2.predict(X_test_m2)
-metrics_mod2 = evaluar_en_euros('Ridge Top 3 (Test)', y_pred_test_2_baja)
-
-# ------------------------------------------------------------
-# 7. MODELO 3: REGRESIÓN RIDGE "TOP 10 REAL"
-# ------------------------------------------------------------
-print("\n" + "="*60)
-print("--- MODELO 3: Regresión Ridge (Top 10 Variables REALES) ---")
+print("--- INICIANDO BÚSQUEDA DE HIPERPARÁMETROS (GRID SEARCH TEMPORAL) ---")
 
 FEATURES_NUM_10 = [
     'descuento_medio_hist', 'duracion_proceso_dias', 'dias_desde_ultima_licitacion', 
@@ -190,78 +160,133 @@ X_test_m3.drop(columns=FEATURES_NUM_10, inplace=True)
 
 numeric_cols_10 = [c for c in X_train_m3.columns if c.startswith('log_')]
 
-preprocessor_ridge_10 = ColumnTransformer(
+preprocessor_10 = ColumnTransformer(
     transformers=[
         ('num', StandardScaler(), numeric_cols_10),
         ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False, drop='first'), FEATURES_CAT_10)
     ], remainder='passthrough'
 )
 
-pipeline_ridge_10 = Pipeline(steps=[
-    ('preprocessor', preprocessor_ridge_10),
-    ('model', Ridge(random_state=42, alpha=1.0))
-])
+# Pipelines base
+pipe_ridge = Pipeline(steps=[('preprocessor', preprocessor_10), ('model', Ridge(random_state=42))])
+pipe_lasso = Pipeline(steps=[('preprocessor', preprocessor_10), ('model', Lasso(random_state=42, max_iter=10000))])
+pipe_elastic = Pipeline(steps=[('preprocessor', preprocessor_10), ('model', ElasticNet(random_state=42, max_iter=10000))])
 
-pipeline_ridge_10.fit(X_train_m3, y_train_baja)
-y_pred_test_3_baja = pipeline_ridge_10.predict(X_test_m3)
-metrics_mod3 = evaluar_en_euros('Ridge Top 10 Real (Test)', y_pred_test_3_baja)
+# Mallas de parámetros
+param_grid_ridge = {'model__alpha': [0.1, 1.0, 10.0, 100.0, 500.0]}
+param_grid_lasso = {'model__alpha': [0.0001, 0.001, 0.01, 0.1, 1.0]}
+param_grid_elastic = {
+    'model__alpha': [0.0001, 0.001, 0.01, 0.1],
+    'model__l1_ratio': [0.2, 0.5, 0.8] 
+}
+
+print("⏳ Optimizando Ridge...")
+grid_ridge = GridSearchCV(pipe_ridge, param_grid_ridge, cv=ps, scoring='neg_mean_absolute_error', n_jobs=-1, refit=True)
+grid_ridge.fit(X_train_m3, y_train_baja)
+
+print("⏳ Optimizando Lasso...")
+grid_lasso = GridSearchCV(pipe_lasso, param_grid_lasso, cv=ps, scoring='neg_mean_absolute_error', n_jobs=-1, refit=True)
+grid_lasso.fit(X_train_m3, y_train_baja)
+
+print("⏳ Optimizando Elastic Net...")
+grid_elastic = GridSearchCV(pipe_elastic, param_grid_elastic, cv=ps, scoring='neg_mean_absolute_error', n_jobs=-1, refit=True)
+grid_elastic.fit(X_train_m3, y_train_baja)
+
+best_ridge = grid_ridge.best_estimator_
+best_lasso = grid_lasso.best_estimator_
+best_elastic = grid_elastic.best_estimator_
+
+print("\n🎯 Mejores hiperparámetros encontrados (Baja):")
+print(f"  - Ridge: {grid_ridge.best_params_}")
+print(f"  - Lasso: {grid_lasso.best_params_}")
+print(f"  - Elastic Net: {grid_elastic.best_params_}")
+
+metrics_ridge = evaluar_en_euros('Ridge Optimizado (Test)', best_ridge.predict(X_test_m3))
+metrics_lasso = evaluar_en_euros('Lasso Optimizado (Test)', best_lasso.predict(X_test_m3))
+metrics_elastic = evaluar_en_euros('Elastic Net Optimizado (Test)', best_elastic.predict(X_test_m3))
+
+
 
 # ------------------------------------------------------------
-# 8. MODELO 4: REGRESIÓN LASSO "TOP 10 REAL"
+# 6.5 DIAGNÓSTICO DE OVERFITTING EN ESCALA NATIVA (% DE BAJA)
 # ------------------------------------------------------------
 print("\n" + "="*60)
-print("--- MODELO 4: Regresión Lasso (Top 10 Variables REALES) ---")
+print("--- DIAGNÓSTICO DE OVERFITTING (RIDGE - ESCALA NATIVA) ---")
 
-pipeline_lasso_10 = Pipeline(steps=[
-    ('preprocessor', preprocessor_ridge_10),
-    ('model', Lasso(random_state=42, alpha=0.001, max_iter=10000))
-])
+# 1. Predicciones en la escala nativa (decimales que optimizó el modelo)
+y_pred_train_ridge = best_ridge.predict(X_train_m3)
+y_pred_test_ridge = best_ridge.predict(X_test_m3)
 
-pipeline_lasso_10.fit(X_train_m3, y_train_baja)
-y_pred_test_4_baja = pipeline_lasso_10.predict(X_test_m3)
-metrics_mod4 = evaluar_en_euros('Lasso Top 10 Real (Test)', y_pred_test_4_baja)
+# 2. Calculamos métricas directamente sobre la variable objetivo real
+# Multiplicamos el MAE por 100 para hablar de "Puntos Porcentuales de error"
+r2_train_pct = r2_score(y_train_baja, y_pred_train_ridge)
+mae_train_pct = mean_absolute_error(y_train_baja, y_pred_train_ridge) * 100 
 
+r2_test_pct = r2_score(y_test_baja, y_pred_test_ridge)
+mae_test_pct = mean_absolute_error(y_test_baja, y_pred_test_ridge) * 100
+
+print(f"R²  Train: {r2_train_pct:.4f}  |  R²  Test: {r2_test_pct:.4f}")
+print(f"MAE Train: {mae_train_pct:.2f}% |  MAE Test: {mae_test_pct:.2f}%")
+
+if mae_train_pct > 0:
+    diferencia_mae_pct = ((mae_test_pct - mae_train_pct) / mae_train_pct) * 100
+    print(f"-> Degradación del MAE en Test: {diferencia_mae_pct:+.1f}%")
+    
 # ------------------------------------------------------------
-# 9. TABLA COMPARATIVA FINAL (CON MdAPE)
+# 7. TABLA COMPARATIVA FINAL 
 # ------------------------------------------------------------
 print("\n" + "="*60)
 print("🏆 RESUMEN FINAL ACTUALIZADO (Predicción de Bajas Traducidas a EUROS) 🏆")
-df_final = pd.DataFrame([metrics_baseline, metrics_mod1, metrics_mod2, metrics_mod3, metrics_mod4])
+df_final = pd.DataFrame([metrics_baseline, metrics_mod1, metrics_ridge, metrics_lasso, metrics_elastic])
 print(df_final[['Modelo', 'R² (Euros)', 'MAE (€)', 'MdAPE (%)']].to_markdown(index=False, floatfmt=",.4f"))
 
 
 # ------------------------------------------------------------
-# 10. EXPLICABILIDAD (COEFICIENTES)
+# 8. EXPLICABILIDAD (COEFICIENTES RIDGE)
+# (Asumimos Ridge Optimizado como ganador por defecto para el gráfico)
 # ------------------------------------------------------------
 print("\n" + "="*60)
-print("--- INTERPRETACIÓN DE COEFICIENTES (Ridge Top 10 Real) ---")
+print("--- INTERPRETACIÓN DE COEFICIENTES (Ridge Optimizado) ---")
 try:
-    feature_names = pipeline_ridge_10.named_steps['preprocessor'].get_feature_names_out()
-    coefs = pipeline_ridge_10.named_steps['model'].coef_
+    feature_names = best_ridge.named_steps['preprocessor'].get_feature_names_out()
+    coefs = best_ridge.named_steps['model'].coef_
     
     df_coef = pd.DataFrame({'Variable': feature_names, 'Impacto_Coeficiente_Baja': coefs})
     df_coef['Impacto_Absoluto'] = df_coef['Impacto_Coeficiente_Baja'].abs()
     df_coef = df_coef.sort_values('Impacto_Absoluto', ascending=False)
     
     df_coef['Impacto_en_Puntos_Porcentuales'] = df_coef['Impacto_Coeficiente_Baja'] * 100
-    print("\nTop 15 variables con más impacto en predecir LA BAJA (%):")
-    print(df_coef[['Variable', 'Impacto_en_Puntos_Porcentuales']].head(15).to_markdown(index=False, floatfmt=",.4f"))
+    
+    plt.figure(figsize=(10, 8))
+    sns.barplot(
+        data=df_coef.head(15), 
+        x='Impacto_Coeficiente_Baja', 
+        y='Variable', 
+        hue='Variable',      
+        legend=False,        
+        palette="vlag"
+    )
+    plt.title("Impacto de las Variables en el % de Baja (Ridge Optimizado)")
+    plt.xlabel("Coeficiente (+ implica mayor rebaja, - implica menor rebaja)")
+    plt.ylabel("Variable")
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / "importancia_coeficientes_ridge_baja_real.png", dpi=300)
+    plt.close()
     
 except Exception as e:
     print(f"Error al generar la interpretabilidad: {e}")
 
-joblib.dump(pipeline_ridge_10, OUTPUT_DIR / "regresion_ridge_top10_baja_real.pkl")
-
+joblib.dump(best_ridge, OUTPUT_DIR / "regresion_ridge_top10_baja_real_optimizado.pkl")
 
 # ------------------------------------------------------------
-# 11. ANÁLISIS GRÁFICO (ERRORES Y RESIDUOS SEPARADOS CON ZOOM)
+# 9. ANÁLISIS GRÁFICO (ERRORES Y RESIDUOS)
 # ------------------------------------------------------------
 print("\n" + "="*60)
-print("--- GENERANDO GRÁFICOS DE RENDIMIENTO (Separados y con Zoom) ---")
+print("--- GENERANDO GRÁFICOS DE RENDIMIENTO ---")
 
 try:
     y_pred_baseline_euros = presupuesto_test
-    y_pred_ridge_euros = presupuesto_test * (1 - np.clip(y_pred_test_3_baja, 0.0, 0.99))
+    y_pred_ridge_euros = presupuesto_test * (1 - np.clip(best_ridge.predict(X_test_m3), 0.0, 0.99))
 
     df_results = pd.DataFrame({
         'Real': y_test_euros_real,
@@ -272,7 +297,6 @@ try:
     df_results['APE_Ridge'] = 100 * (np.abs(df_results['Real'] - df_results['Prediccion_Ridge'])) / df_results['Real']
     df_results['APE_Baseline'] = 100 * (np.abs(df_results['Real'] - df_results['Prediccion_Baseline'])) / df_results['Real']
 
-    # --- 1. Gráfico Boxplot APE ---
     plt.figure(figsize=(10, 5))
     sns.boxplot(
         data=df_results[['APE_Baseline', 'APE_Ridge']],
@@ -280,7 +304,7 @@ try:
         showfliers=False,
         palette=['#4C72B0', '#DD8452']
     )
-    plt.title('Distribución del Error Porcentual Absoluto (APE)\nBaseline vs. Ridge Top 10 Real', fontsize=13, fontweight='bold')
+    plt.title('Distribución del Error Porcentual Absoluto (APE)\nBaseline vs. Ridge Optimizado', fontsize=13, fontweight='bold')
     plt.xlabel('Error Porcentual Absoluto (APE %) - Escala Logarítmica')
     plt.gca().set_xscale('log')
     plt.xlim(0.1, 300)
@@ -291,34 +315,15 @@ try:
     plt.savefig(OUTPUT_DIR / '1_comparativa_error_boxplot_Ridge.png', dpi=300)
     plt.close()
 
-    # --- CÁLCULO DE LÍMITES PARA EL ZOOM (Recorte del 0.5% extremo) ---
     min_val_zoom = max(10.0, df_results['Real'].quantile(0.005)) 
     max_val_zoom = df_results['Real'].quantile(0.995)
 
-    # --- 2. Gráfico Scatter: BASELINE ---
-    plt.figure(figsize=(8, 8))
-    plt.scatter(df_results['Real'], df_results['Prediccion_Baseline'], alpha=0.15, s=10, color='#4C72B0')
-    plt.xscale('log')
-    plt.yscale('log')
-    plt.plot([min_val_zoom, max_val_zoom], [min_val_zoom, max_val_zoom], color='red', linestyle='--', linewidth=2, label='Predicción Perfecta (y=x)')
-    plt.title("Baseline Absoluto\n(Asume Adjudicación = Presupuesto)", fontsize=14, fontweight='bold')
-    plt.xlabel("Valor Real Adjudicado (€) [Escala Log]", fontsize=12)
-    plt.ylabel("Valor Predicho (€) [Escala Log]", fontsize=12)
-    plt.xlim(min_val_zoom, max_val_zoom)
-    plt.ylim(min_val_zoom, max_val_zoom)
-    plt.grid(True, which="both", ls="--", alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / '2_scatter_Baseline_Zoom.png', dpi=300)
-    plt.close()
-
-    # --- 3. Gráfico Scatter: RIDGE TOP 10 REAL ---
     plt.figure(figsize=(8, 8))
     plt.scatter(df_results['Real'], df_results['Prediccion_Ridge'], alpha=0.15, s=10, color='#DD8452')
     plt.xscale('log')
     plt.yscale('log')
     plt.plot([min_val_zoom, max_val_zoom], [min_val_zoom, max_val_zoom], color='red', linestyle='--', linewidth=2, label='Predicción Perfecta (y=x)')
-    plt.title("Modelo Ridge (Top 10 Real)\n(Corrige prediciendo el % de baja)", fontsize=14, fontweight='bold')
+    plt.title("Modelo Ridge Optimizado (Top 10 Real)\n(Corrige prediciendo el % de baja)", fontsize=14, fontweight='bold')
     plt.xlabel("Valor Real Adjudicado (€) [Escala Log]", fontsize=12)
     plt.ylabel("Valor Predicho (€) [Escala Log]", fontsize=12)
     plt.xlim(min_val_zoom, max_val_zoom)
@@ -329,9 +334,7 @@ try:
     plt.savefig(OUTPUT_DIR / '3_scatter_Ridge_Zoom.png', dpi=300)
     plt.close()
 
-    print("✅ Gráficos separados y con zoom generados correctamente en la carpeta de salida.")
-
 except Exception as e:
     print(f"Error generando gráficos: {e}")
 
-print("\n🎉 ¡Script completado!")
+print("\n🎉 ¡Script Baja completado!")
