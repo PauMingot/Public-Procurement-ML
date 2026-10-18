@@ -27,6 +27,7 @@ from config import (
     TEST_PATH,
     TRAIN_PATH,
     VAL_PATH,
+    get_dataset_path,
 )
 from src.data_cleaning import clean_dataframe
 
@@ -40,16 +41,18 @@ def run_eda_bid_discount() -> None:
     eda_output_dir.mkdir(parents=True, exist_ok=True)
     sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
-    logger.info("Loading datasets for Bid Discount EDA from %s, %s, %s...", TRAIN_PATH.name, VAL_PATH.name, TEST_PATH.name)
     try:
-        train_df = pd.read_parquet(TRAIN_PATH)
-        val_df = pd.read_parquet(VAL_PATH)
-        test_df = pd.read_parquet(TEST_PATH)
+        train_path = get_dataset_path("train")
+        if train_path == get_dataset_path("sample"):
+            df_eda = pd.read_parquet(train_path)
+        else:
+            train_df = pd.read_parquet(train_path)
+            val_df = pd.read_parquet(get_dataset_path("val"))
+            test_df = pd.read_parquet(get_dataset_path("test"))
+            df_eda = pd.concat([train_df, val_df, test_df], ignore_index=True)
     except FileNotFoundError as err:
         logger.error("Dataset not found: %s. Please ensure parquet files exist in data directory.", err)
         return
-
-    df_eda = pd.concat([train_df, val_df, test_df], ignore_index=True)
     logger.info("Total initial records: %d", len(df_eda))
 
     # Apply standardized business cleaning with bid_pct computation

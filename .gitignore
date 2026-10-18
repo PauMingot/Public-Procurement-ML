@@ -1,8 +1,10 @@
-# Data files
-data/
-*.parquet
+# Data files (raw datasets ignored, sample files allowed)
+data/*
+!data/sample_tenders.parquet
+!data/sample_profiles.parquet
 *.csv
 *.xlsx
+*.pdf
 
 # Model artifacts
 *.pkl
@@ -16,6 +18,7 @@ __pycache__/
 dist/
 build/
 .eggs/
+.pytest_cache/
 
 # Virtual environments
 .venv/

@@ -40,6 +40,8 @@ POSSIBLE_PROFILE_PATHS = [
     PROJECT_ROOT / "data" / "perfiles_empresas.parquet",
     PROJECT_ROOT / "perfiles_empresas.parquet",
     Path(__file__).parent / "perfiles_empresas.parquet",
+    DATA_DIR / "sample_profiles.parquet",
+    PROJECT_ROOT / "data" / "sample_profiles.parquet",
 ]
 
 POSSIBLE_MODEL_PATHS = [

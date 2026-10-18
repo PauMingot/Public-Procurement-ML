@@ -1,13 +1,17 @@
-"""
-Centralized configuration for the Public Procurement ML project.
+"""Centralized configuration for the Public Procurement ML project.
 
 All file paths, column names, data-leakage columns, and winning
 hyperparameters live here so every script imports from a single
-source of truth.
+source of truth. Supports automatic fallback to sample demo datasets.
 """
 
+from __future__ import annotations
+
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -19,8 +23,38 @@ TRAIN_PATH = DATA_DIR / "train_procesado_v2_limpio.parquet"
 VAL_PATH = DATA_DIR / "val_procesado_v2_limpio.parquet"
 TEST_PATH = DATA_DIR / "test_procesado_v2_limpio.parquet"
 
+SAMPLE_TENDERS_PATH = DATA_DIR / "sample_tenders.parquet"
+SAMPLE_PROFILES_PATH = DATA_DIR / "sample_profiles.parquet"
+
 OUTPUT_DIR = Path(__file__).parent / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+
+def get_dataset_path(split: str = "train") -> Path:
+    """Return path for requested split, falling back to sample data if full dataset is absent.
+
+    Parameters
+    ----------
+    split : {"train", "val", "test", "sample"}
+        Dataset partition name.
+
+    Returns
+    -------
+    Path
+        Path to existing parquet file.
+    """
+    mapping = {
+        "train": TRAIN_PATH,
+        "val": VAL_PATH,
+        "test": TEST_PATH,
+        "sample": SAMPLE_TENDERS_PATH,
+    }
+    target = mapping.get(split, TRAIN_PATH)
+    if not target.exists() and SAMPLE_TENDERS_PATH.exists():
+        logger.info("Full '%s' dataset not found at %s. Using sample dataset: %s", split, target, SAMPLE_TENDERS_PATH.name)
+        return SAMPLE_TENDERS_PATH
+    return target
+
 
 # ---------------------------------------------------------------------------
 # Column names (matching the original PLACE dataset schema)
@@ -60,7 +94,7 @@ EXTRA_LEAKAGE_AMOUNT = ["duracion_proceso_dias", "es_anomalia_temporal"]
 EXTRA_LEAKAGE_BID = [TARGET_AMOUNT, "duracion_proceso_dias", "es_anomalia_temporal"]
 
 # ---------------------------------------------------------------------------
-# Winning hyperparameters (found during tuning)
+# Winning hyperparameters (found during tuning on PLACE dataset)
 # ---------------------------------------------------------------------------
 RF_PARAMS_AMOUNT = {
     "n_estimators": 300,

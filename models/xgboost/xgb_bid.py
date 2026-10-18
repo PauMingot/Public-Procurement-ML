@@ -42,6 +42,7 @@ from config import (
     TRAIN_PATH,
     VAL_PATH,
     XGB_PARAMS_BID,
+    get_dataset_path,
 )
 from src.data_cleaning import clean_dataframe, drop_leakage_columns
 from src.feature_importance import aggregate_importances
@@ -62,11 +63,10 @@ def run_xgb_bid() -> None:
     out_dir = OUTPUT_DIR / "xgboost_bid"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Loading datasets from %s...", TRAIN_PATH.parent)
     try:
-        train_df = pd.read_parquet(TRAIN_PATH)
-        val_df = pd.read_parquet(VAL_PATH)
-        test_df = pd.read_parquet(TEST_PATH)
+        train_df = pd.read_parquet(get_dataset_path("train"))
+        val_df = pd.read_parquet(get_dataset_path("val"))
+        test_df = pd.read_parquet(get_dataset_path("test"))
     except FileNotFoundError as err:
         logger.error("Dataset missing: %s", err)
         return
