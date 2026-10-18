@@ -26,7 +26,7 @@ This project uses over **500,000 official procurement records (2018–2024)** fr
 
 ---
 
-## 📐 Mathematical Formulation: Why $R^2$ is Misleading in Public Tenders
+## 📐 Mathematical Formulation: Why R² is Misleading in Public Tenders
 
 A frequent flaw in public procurement data science is framing the problem as a naive regression of award amount in euros ($\hat{y} \approx y$). 
 
@@ -35,17 +35,23 @@ Because public contract budgets span **six orders of magnitude** (from 100 € m
 To solve this, this research explores and contrasts two mathematical formulations:
 
 ### Formulation A: Absolute Award in Log-Space
+
 $$\log(1 + y) = f(X) + \varepsilon \implies \hat{y} = \exp(\hat{z}) - 1$$
+
 Stabilizes the variance across contract sizes, but remains vulnerable to scale distortion.
 
-### Formulation B: Relative Bid Discount Percentage ($\% \text{ de baja}$)
-$$\text{pct\_baja} = \frac{\text{Budget} - \text{Award}}{\text{Budget}} \times 100 \in [0, 100]\%$$
+### Formulation B: Relative Bid Discount Percentage (% de baja)
+
+$$\text{Discount (\%)} = \frac{\text{Budget} - \text{Award}}{\text{Budget}} \times 100$$
 
 Predicting the discount percentage directly normalizes contract magnitude. A 10% discount on a 10,000 € contract is mathematically treated with the same relative precision as a 10% discount on a 1,000,000 € contract. Predictions are then mapped back to euro award amounts for direct business utility:
-$$\widehat{\text{Award}} = \text{Budget} \times \left(1 - \frac{\widehat{\text{pct\_baja}}}{100}\right)$$
+
+$$\text{Award}_{\text{pred}} = \text{Budget} \times \left(1 - \frac{\text{Discount}_{\text{pred}}}{100}\right)$$
 
 ### Evaluation Metric: MdAPE
+
 Because procurement residuals have heavy-tailed, non-Gaussian distributions, Mean Absolute Error (MAE) and Root Mean Squared Error (RMSE) are disproportionately skewed by multi-million euro contracts. We adopt the **Median Absolute Percentage Error (MdAPE)** as the primary robust evaluation metric:
+
 $$\text{MdAPE} = \text{median}\left( \left| \frac{y_i - \hat{y}_i}{y_i} \right| \right) \times 100$$
 
 ---
@@ -54,22 +60,21 @@ $$\text{MdAPE} = \text{median}\left( \left| \frac{y_i - \hat{y}_i}{y_i} \right| 
 
 All models were evaluated on a strictly segregated holdout test set. All predictions were mapped back to **real euro amounts** to guarantee an *apples-to-apples* benchmark:
 
-| Model Architecture | Target Formulation | MAE (€) | MdAPE (%) | Test $R^2$ | Key Observations |
+| Model Architecture | Target Formulation | MAE (€) | MdAPE (%) | Test R² | Key Observations |
 |:---|:---|:---:|:---:|:---:|:---|
 | **Null Baseline** | Award = Base Budget | 83,717 € | 5.43% | 0.8912 | Reference baseline (assumes 0% discount) |
 | **Regularized Linear (Ridge / Lasso)** | Award Amount (Log) | 60,928 € | 8.11% | 0.9015 | L1/L2 penalized parametric benchmark |
 | **CART Decision Tree** | Award Amount (Log) | 67,515 € | 7.61% | 0.8841 | Single tree with cost-complexity pruning |
 | **Random Forest Regressor** | Award Amount (Log) | 52,267 € | 9.12% | 0.9108 | 300 estimators, non-linear ensemble |
 | **XGBoost Regressor (Winner)** | **% Bid Discount** | **44,427 €** | **8.10%** | **0.9264** | **Lowest MAE (cut error by 47% vs baseline)** |
-| **TabM (Tabular Deep Learning)** | % Bid Discount | 47,076 € | 6.07% | 0.1281 | Multi-head tabular neural net; unstable $R^2$ |
+| **TabM (Tabular Deep Learning)** | % Bid Discount | 47,076 € | 6.07% | 0.1281 | Multi-head tabular neural net; unstable R² |
 
 > **Key Finding**: Gradient Boosted Decision Trees (**XGBoost**) modeling the relative discount percentage achieved the best overall performance, reducing the average monetary error from **83,717 € to 44,427 €** while offering full interpretability via TreeSHAP.
 
-<p align="center">
+<div align="center">
   <img src="docs/images/boxplot_error_xgb.png" alt="Model Error Distribution Boxplot" width="750"/>
-  <br/>
-  <em>Figure 1: Absolute Percentage Error (APE) distribution comparing baseline vs. winning XGBoost model.</em>
-</p>
+  <p><em>Figure 1: Absolute Percentage Error (APE) distribution comparing baseline vs. winning XGBoost model.</em></p>
+</div>
 
 ---
 
@@ -77,11 +82,10 @@ All models were evaluated on a strictly segregated holdout test set. All predict
 
 Understanding *why* a contractor or model bids at a certain price is critical for regulatory audits and company pricing committees. We implemented **TreeSHAP** to compute exact Shapley values on the winning model:
 
-<p align="center">
+<div align="center">
   <img src="docs/images/shap_xgb_baja.png" alt="SHAP Feature Importance Summary Plot" width="850"/>
-  <br/>
-  <em>Figure 2: SHAP summary plot for XGBoost predicting percentage bid discount.</em>
-</p>
+  <p><em>Figure 2: SHAP summary plot for XGBoost predicting percentage bid discount.</em></p>
+</div>
 
 ### Dominant Predictive Signals:
 1. **Historical Contractor Aggressiveness (`descuento_medio_hist`)**: The primary driver of future discounts is the historical pricing strategy of the competing firm. Contractors have entrenched bidding habits.
@@ -100,17 +104,15 @@ To operationalize the mathematical models into a real decision-support tool, we 
 - **Competitor Filtering Engine**: Automatically filters candidate contractors from a database of historical contractor profiles based on budget scale match, regional experience, and contract type specialization.
 - **Simulated Sealed-Bid Auction**: Simulates the bids of all identified rivals using the fitted ML pipeline and produces a ranked leaderboard of predicted bids and award estimates.
 
-<p align="center">
+<div align="center">
   <img src="docs/images/streamlit_app_demo.png" alt="Streamlit Simulator UI" width="850"/>
-  <br/>
-  <em>Figure 3: Auction Simulator configuration interface with competitor filtering controls.</em>
-</p>
+  <p><em>Figure 3: Auction Simulator configuration interface with competitor filtering controls.</em></p>
+</div>
 
-<p align="center">
+<div align="center">
   <img src="docs/images/streamlit_app_results.png" alt="Streamlit Simulator Results Leaderboard" width="850"/>
-  <br/>
-  <em>Figure 4: Auction Simulator leaderboard showing predicted competitor bids in euros and discount percentages.</em>
-</p>
+  <p><em>Figure 4: Auction Simulator leaderboard showing predicted competitor bids in euros and discount percentages.</em></p>
+</div>
 
 ---
 
@@ -121,9 +123,9 @@ In procurement datasets, post-award information is frequently recorded in the sa
 - **Strict Elimination of Ex-Post Variables**: Columns such as `lote_numero_ofertas_recibidas` (number of received bids), `lote_precio_oferta_mas_baja` (lowest bid price), `lote_precio_oferta_mas_alta`, `es_sobrecoste` (cost overrun), and `duracion_proceso_dias` are strictly suppressed prior to model ingestion.
 - **Economic Feasibility Boundaries**:
   - Filter out non-awarded or cancelled tenders (`es_exito == 1`).
-  - Enforce award bound: $\text{Award} \le \text{Budget}$.
-  - Exclude unit-price framework agreements where estimated value exceeds budget by $>10\times$.
-  - Exclude symbolic bids ($\text{Award} < 2.0\text{ €}$).
+  - Enforce award bound: Award must not exceed budget (`Award ≤ Budget`).
+  - Exclude unit-price framework agreements where estimated value exceeds budget by more than 10× (`Estimated Value > 10 × Budget`).
+  - Exclude symbolic bids (`Award < 2.00 €`).
 - **One-Hot Dummy Aggregation**: Feature importance routines re-aggregate dummy variables back to parent categorical variables to prevent splitting bias.
 
 ---
